@@ -1,0 +1,580 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RPM Plotter</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --line: #2563eb;
+      --grid: #d7dde6;
+      --text: #172033;
+      --muted: #667085;
+      --border: #d0d5dd;
+      --danger: #b42318;
+      --ok: #027a48;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    main {
+      width: min(1120px, calc(100vw - 32px));
+      margin: 0 auto;
+      padding: 24px 0;
+    }
+
+    header {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 26px;
+      font-weight: 700;
+    }
+
+    .status {
+      color: var(--muted);
+      text-align: right;
+    }
+
+    .status.connected {
+      color: var(--ok);
+    }
+
+    .status.error {
+      color: var(--danger);
+    }
+
+    .toolbar,
+    .metrics,
+    .chart-panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
+      padding: 12px;
+      margin-bottom: 12px;
+    }
+
+    label {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+    }
+
+    input,
+    select,
+    button {
+      height: 36px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: #fff;
+      color: var(--text);
+      font: inherit;
+    }
+
+    input,
+    select {
+      padding: 0 10px;
+    }
+
+    input[type="number"] {
+      width: 110px;
+    }
+
+    button {
+      padding: 0 14px;
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    button.primary {
+      border-color: #1d4ed8;
+      background: #2563eb;
+      color: #fff;
+    }
+
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.55;
+    }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 1px;
+      overflow: hidden;
+      margin-bottom: 12px;
+    }
+
+    .metric {
+      padding: 14px;
+      background: #fff;
+    }
+
+    .metric span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 4px;
+    }
+
+    .metric strong {
+      font-size: 24px;
+      font-weight: 700;
+    }
+
+    .metric strong.hex {
+      display: block;
+      min-height: 34px;
+      overflow-wrap: anywhere;
+      font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+      font-size: 16px;
+      line-height: 1.35;
+    }
+
+    .chart-panel {
+      padding: 12px;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 430px;
+      border-radius: 6px;
+      background: #fbfcfe;
+    }
+
+    .hint {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    @media (max-width: 760px) {
+      header {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .status {
+        text-align: left;
+      }
+
+      .metrics {
+        grid-template-columns: repeat(2, 1fr);
+      }
+
+      canvas {
+        height: 320px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>RPM Plotter</h1>
+      </div>
+      <div id="status" class="status">Disconnected</div>
+    </header>
+
+    <section class="toolbar" aria-label="Serial controls">
+      <label>
+        Baud
+        <input id="baud" type="number" min="1200" step="1" value="115200">
+      </label>
+      <label>
+        Data
+        <select id="mode">
+          <option value="float32" selected>Float32 binary</option>
+          <option value="int32">Int32 binary</option>
+          <option value="text">Text lines</option>
+        </select>
+      </label>
+      <button id="connect" class="primary">Connect</button>
+      <button id="disconnect" disabled>Disconnect</button>
+      <button id="clear">Clear</button>
+      <button id="resync">Resync</button>
+      <label>
+        Y Axis
+        <select id="yAxisMode">
+          <option value="auto" selected>Auto</option>
+          <option value="manual">Manual</option>
+        </select>
+      </label>
+      <label>
+        Y Min
+        <input id="yMin" type="number" step="1" value="-300" disabled>
+      </label>
+      <label>
+        Y Max
+        <input id="yMax" type="number" step="1" value="300" disabled>
+      </label>
+    </section>
+
+    <section class="metrics" aria-label="RPM metrics">
+      <div class="metric">
+        <span>Latest RPM</span>
+        <strong id="latest">--</strong>
+      </div>
+      <div class="metric">
+        <span>Min RPM</span>
+        <strong id="min">--</strong>
+      </div>
+      <div class="metric">
+        <span>Max RPM</span>
+        <strong id="max">--</strong>
+      </div>
+      <div class="metric">
+        <span>Samples</span>
+        <strong id="samples">0</strong>
+      </div>
+      <div class="metric">
+        <span>Last HEX</span>
+        <strong id="lastHex" class="hex">--</strong>
+      </div>
+    </section>
+
+    <section class="chart-panel" aria-label="RPM chart">
+      <canvas id="chart"></canvas>
+      <div class="hint">
+        The STM32 project currently sends one little-endian Float32 RPM value per sample.
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const MAX_POINTS = 600;
+    const state = {
+      port: null,
+      reader: null,
+      keepReading: false,
+      rxBytes: [],
+      textCache: "",
+      points: [],
+      min: Infinity,
+      max: -Infinity,
+      sampleCount: 0,
+      lastDraw: 0,
+      lastHexBytes: []
+    };
+
+    const el = {
+      baud: document.getElementById("baud"),
+      mode: document.getElementById("mode"),
+      connect: document.getElementById("connect"),
+      disconnect: document.getElementById("disconnect"),
+      clear: document.getElementById("clear"),
+      resync: document.getElementById("resync"),
+      yAxisMode: document.getElementById("yAxisMode"),
+      yMin: document.getElementById("yMin"),
+      yMax: document.getElementById("yMax"),
+      status: document.getElementById("status"),
+      latest: document.getElementById("latest"),
+      min: document.getElementById("min"),
+      max: document.getElementById("max"),
+      samples: document.getElementById("samples"),
+      lastHex: document.getElementById("lastHex"),
+      chart: document.getElementById("chart")
+    };
+
+    const ctx = el.chart.getContext("2d");
+
+    function setStatus(text, cls = "") {
+      el.status.textContent = text;
+      el.status.className = `status ${cls}`;
+    }
+
+    function setConnected(isConnected) {
+      el.connect.disabled = isConnected;
+      el.disconnect.disabled = !isConnected;
+      el.baud.disabled = isConnected;
+    }
+
+    function resetData() {
+      state.rxBytes = [];
+      state.textCache = "";
+      state.points = [];
+      state.min = Infinity;
+      state.max = -Infinity;
+      state.sampleCount = 0;
+      state.lastHexBytes = [];
+      el.latest.textContent = "--";
+      el.min.textContent = "--";
+      el.max.textContent = "--";
+      el.samples.textContent = "0";
+      el.lastHex.textContent = "--";
+      drawChart();
+    }
+
+    function updateLastHex(bytes) {
+      state.lastHexBytes.push(...bytes);
+      if (state.lastHexBytes.length > 32) {
+        state.lastHexBytes = state.lastHexBytes.slice(-32);
+      }
+
+      el.lastHex.textContent = state.lastHexBytes
+        .map((byte) => byte.toString(16).padStart(2, "0").toUpperCase())
+        .join(" ");
+    }
+
+    function addRpm(value) {
+      if (!Number.isFinite(value) || Math.abs(value) > 100000) {
+        return;
+      }
+
+      state.points.push(value);
+      if (state.points.length > MAX_POINTS) {
+        state.points.shift();
+      }
+
+      state.min = Math.min(state.min, value);
+      state.max = Math.max(state.max, value);
+      state.sampleCount += 1;
+
+      el.latest.textContent = value.toFixed(2);
+      el.min.textContent = state.min.toFixed(2);
+      el.max.textContent = state.max.toFixed(2);
+      el.samples.textContent = String(state.sampleCount);
+
+      const now = performance.now();
+      if (now - state.lastDraw > 30) {
+        state.lastDraw = now;
+        drawChart();
+      }
+    }
+
+    function getYAxisRange(values) {
+      if (el.yAxisMode.value === "manual") {
+        const minY = Number(el.yMin.value);
+        const maxY = Number(el.yMax.value);
+
+        if (Number.isFinite(minY) && Number.isFinite(maxY) && maxY > minY) {
+          return { minY, maxY };
+        }
+      }
+
+      let minY = values.length ? Math.min(...values) : -100;
+      let maxY = values.length ? Math.max(...values) : 100;
+      if (Math.abs(maxY - minY) < 1) {
+        maxY += 1;
+        minY -= 1;
+      }
+      const margin = (maxY - minY) * 0.12;
+      return {
+        minY: minY - margin,
+        maxY: maxY + margin
+      };
+    }
+
+    function parseBinaryBytes(chunk, readFrame) {
+      updateLastHex(chunk);
+
+      for (const byte of chunk) {
+        state.rxBytes.push(byte);
+      }
+
+      while (state.rxBytes.length >= 4) {
+        const frame = state.rxBytes.splice(0, 4);
+        const view = new DataView(new Uint8Array(frame).buffer);
+        addRpm(readFrame(view));
+      }
+    }
+
+    function parseTextBytes(chunk) {
+      updateLastHex(chunk);
+      state.textCache += new TextDecoder().decode(chunk, { stream: true });
+      const lines = state.textCache.split(/\r?\n/);
+      state.textCache = lines.pop() ?? "";
+
+      for (const line of lines) {
+        const value = Number.parseFloat(line.trim());
+        addRpm(value);
+      }
+    }
+
+    async function readLoop() {
+      while (state.port && state.port.readable && state.keepReading) {
+        state.reader = state.port.readable.getReader();
+        try {
+          while (state.keepReading) {
+            const { value, done } = await state.reader.read();
+            if (done) {
+              break;
+            }
+            if (value) {
+              if (el.mode.value === "float32") {
+                parseBinaryBytes(value, (view) => view.getFloat32(0, true));
+              } else if (el.mode.value === "int32") {
+                parseBinaryBytes(value, (view) => view.getInt32(0, true));
+              } else {
+                parseTextBytes(value);
+              }
+            }
+          }
+        } catch (err) {
+          setStatus(`Read error: ${err.message}`, "error");
+        } finally {
+          state.reader.releaseLock();
+          state.reader = null;
+        }
+      }
+    }
+
+    async function connectSerial() {
+      if (!("serial" in navigator)) {
+        setStatus("Web Serial is not supported. Use Chrome or Edge.", "error");
+        return;
+      }
+
+      try {
+        state.port = await navigator.serial.requestPort();
+        await state.port.open({ baudRate: Number(el.baud.value) || 115200 });
+        state.keepReading = true;
+        setConnected(true);
+        setStatus("Connected", "connected");
+        readLoop();
+      } catch (err) {
+        setStatus(`Connect failed: ${err.message}`, "error");
+      }
+    }
+
+    async function disconnectSerial() {
+      state.keepReading = false;
+
+      if (state.reader) {
+        await state.reader.cancel();
+      }
+
+      if (state.port) {
+        await state.port.close();
+        state.port = null;
+      }
+
+      setConnected(false);
+      setStatus("Disconnected");
+    }
+
+    function drawChart() {
+      const dpr = window.devicePixelRatio || 1;
+      const rect = el.chart.getBoundingClientRect();
+      const width = Math.max(1, Math.floor(rect.width * dpr));
+      const height = Math.max(1, Math.floor(rect.height * dpr));
+
+      if (el.chart.width !== width || el.chart.height !== height) {
+        el.chart.width = width;
+        el.chart.height = height;
+      }
+
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, rect.width, rect.height);
+
+      const pad = { left: 54, right: 16, top: 18, bottom: 34 };
+      const plotW = rect.width - pad.left - pad.right;
+      const plotH = rect.height - pad.top - pad.bottom;
+
+      ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue("--grid");
+      ctx.lineWidth = 1;
+      ctx.fillStyle = "#667085";
+      ctx.font = "12px system-ui, sans-serif";
+
+      const values = state.points;
+      const { minY, maxY } = getYAxisRange(values);
+
+      for (let i = 0; i <= 4; i += 1) {
+        const y = pad.top + (plotH * i) / 4;
+        const rpm = maxY - ((maxY - minY) * i) / 4;
+        ctx.beginPath();
+        ctx.moveTo(pad.left, y);
+        ctx.lineTo(pad.left + plotW, y);
+        ctx.stroke();
+        ctx.fillText(rpm.toFixed(1), 8, y + 4);
+      }
+
+      ctx.strokeStyle = "#9aa4b2";
+      ctx.beginPath();
+      ctx.moveTo(pad.left, pad.top);
+      ctx.lineTo(pad.left, pad.top + plotH);
+      ctx.lineTo(pad.left + plotW, pad.top + plotH);
+      ctx.stroke();
+
+      if (values.length < 2) {
+        ctx.fillStyle = "#667085";
+        ctx.fillText("Waiting for RPM samples...", pad.left + 12, pad.top + 24);
+        return;
+      }
+
+      ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue("--line");
+      ctx.lineWidth = 2;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(pad.left, pad.top, plotW, plotH);
+      ctx.clip();
+      ctx.beginPath();
+
+      for (let i = 0; i < values.length; i += 1) {
+        const x = pad.left + (plotW * i) / (MAX_POINTS - 1);
+        const y = pad.top + plotH - ((values[i] - minY) / (maxY - minY)) * plotH;
+        if (i === 0) {
+          ctx.moveTo(x, y);
+        } else {
+          ctx.lineTo(x, y);
+        }
+      }
+
+      ctx.stroke();
+      ctx.restore();
+      ctx.fillStyle = "#667085";
+      ctx.fillText("latest samples", pad.left + plotW - 88, pad.top + plotH + 24);
+      ctx.fillText("RPM", 8, 16);
+    }
+
+    el.connect.addEventListener("click", connectSerial);
+    el.disconnect.addEventListener("click", disconnectSerial);
+    el.clear.addEventListener("click", resetData);
+    el.resync.addEventListener("click", () => {
+      state.rxBytes = [];
+      state.textCache = "";
+      setStatus(state.port ? "Resynced" : "Disconnected", state.port ? "connected" : "");
+    });
+    el.yAxisMode.addEventListener("change", () => {
+      const manual = el.yAxisMode.value === "manual";
+      el.yMin.disabled = !manual;
+      el.yMax.disabled = !manual;
+      drawChart();
+    });
+    el.yMin.addEventListener("input", drawChart);
+    el.yMax.addEventListener("input", drawChart);
+
+    window.addEventListener("resize", drawChart);
+    resetData();
+  </script>
+</body>
+</html>
