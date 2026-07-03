@@ -10,6 +10,7 @@
       --bg: #f6f7f9;
       --panel: #ffffff;
       --line: #2563eb;
+      --target-line: #f97316;
       --grid: #d7dde6;
       --text: #172033;
       --muted: #667085;
@@ -126,7 +127,7 @@
 
     .metrics {
       display: grid;
-      grid-template-columns: repeat(5, 1fr);
+      grid-template-columns: repeat(6, 1fr);
       gap: 1px;
       overflow: hidden;
       margin-bottom: 12px;
@@ -213,7 +214,8 @@
       <label>
         Data
         <select id="mode">
-          <option value="float32" selected>Float32 binary</option>
+          <option value="float32_pair" selected>Float32 pair</option>
+          <option value="float32">Float32 single</option>
           <option value="int32">Int32 binary</option>
           <option value="text">Text lines</option>
         </select>
@@ -241,15 +243,19 @@
 
     <section class="metrics" aria-label="RPM metrics">
       <div class="metric">
-        <span>Latest RPM</span>
+        <span>Actual RPM</span>
         <strong id="latest">--</strong>
       </div>
       <div class="metric">
-        <span>Min RPM</span>
+        <span>Target RPM</span>
+        <strong id="target">--</strong>
+      </div>
+      <div class="metric">
+        <span>Min Actual</span>
         <strong id="min">--</strong>
       </div>
       <div class="metric">
-        <span>Max RPM</span>
+        <span>Max Actual</span>
         <strong id="max">--</strong>
       </div>
       <div class="metric">
@@ -265,7 +271,7 @@
     <section class="chart-panel" aria-label="RPM chart">
       <canvas id="chart"></canvas>
       <div class="hint">
-        The STM32 project currently sends one little-endian Float32 RPM value per sample.
+        Protocol: little-endian Float32 actual RPM + Float32 target RPM per 100Hz frame.
       </div>
     </section>
   </main>
@@ -278,7 +284,8 @@
       keepReading: false,
       rxBytes: [],
       textCache: "",
-      points: [],
+      actualPoints: [],
+      targetPoints: [],
       min: Infinity,
       max: -Infinity,
       sampleCount: 0,
@@ -298,6 +305,7 @@
       yMax: document.getElementById("yMax"),
       status: document.getElementById("status"),
       latest: document.getElementById("latest"),
+      target: document.getElementById("target"),
       min: document.getElementById("min"),
       max: document.getElementById("max"),
       samples: document.getElementById("samples"),
@@ -321,12 +329,14 @@
     function resetData() {
       state.rxBytes = [];
       state.textCache = "";
-      state.points = [];
+      state.actualPoints = [];
+      state.targetPoints = [];
       state.min = Infinity;
       state.max = -Infinity;
       state.sampleCount = 0;
       state.lastHexBytes = [];
       el.latest.textContent = "--";
+      el.target.textContent = "--";
       el.min.textContent = "--";
       el.max.textContent = "--";
       el.samples.textContent = "0";
@@ -345,21 +355,35 @@
         .join(" ");
     }
 
-    function addRpm(value) {
-      if (!Number.isFinite(value) || Math.abs(value) > 100000) {
+    function isValidRpm(value) {
+      return Number.isFinite(value) && Math.abs(value) <= 100000;
+    }
+
+    function addSample(actual, target = null) {
+      if (!isValidRpm(actual) || (target !== null && !isValidRpm(target))) {
         return;
       }
 
-      state.points.push(value);
-      if (state.points.length > MAX_POINTS) {
-        state.points.shift();
+      state.actualPoints.push(actual);
+      if (state.actualPoints.length > MAX_POINTS) {
+        state.actualPoints.shift();
       }
 
-      state.min = Math.min(state.min, value);
-      state.max = Math.max(state.max, value);
+      if (target !== null) {
+        state.targetPoints.push(target);
+        if (state.targetPoints.length > MAX_POINTS) {
+          state.targetPoints.shift();
+        }
+      } else {
+        state.targetPoints = [];
+      }
+
+      state.min = Math.min(state.min, actual);
+      state.max = Math.max(state.max, actual);
       state.sampleCount += 1;
 
-      el.latest.textContent = value.toFixed(2);
+      el.latest.textContent = actual.toFixed(2);
+      el.target.textContent = target === null ? "--" : target.toFixed(2);
       el.min.textContent = state.min.toFixed(2);
       el.max.textContent = state.max.toFixed(2);
       el.samples.textContent = String(state.sampleCount);
@@ -394,17 +418,17 @@
       };
     }
 
-    function parseBinaryBytes(chunk, readFrame) {
+    function parseBinaryBytes(chunk, frameSize, readFrame) {
       updateLastHex(chunk);
 
       for (const byte of chunk) {
         state.rxBytes.push(byte);
       }
 
-      while (state.rxBytes.length >= 4) {
-        const frame = state.rxBytes.splice(0, 4);
+      while (state.rxBytes.length >= frameSize) {
+        const frame = state.rxBytes.splice(0, frameSize);
         const view = new DataView(new Uint8Array(frame).buffer);
-        addRpm(readFrame(view));
+        readFrame(view);
       }
     }
 
@@ -415,8 +439,17 @@
       state.textCache = lines.pop() ?? "";
 
       for (const line of lines) {
-        const value = Number.parseFloat(line.trim());
-        addRpm(value);
+        const values = line
+          .trim()
+          .split(/[\s,;]+/)
+          .map((part) => Number.parseFloat(part))
+          .filter(Number.isFinite);
+
+        if (values.length >= 2) {
+          addSample(values[0], values[1]);
+        } else if (values.length === 1) {
+          addSample(values[0]);
+        }
       }
     }
 
@@ -430,10 +463,18 @@
               break;
             }
             if (value) {
-              if (el.mode.value === "float32") {
-                parseBinaryBytes(value, (view) => view.getFloat32(0, true));
+              if (el.mode.value === "float32_pair") {
+                parseBinaryBytes(value, 8, (view) => {
+                  addSample(view.getFloat32(0, true), view.getFloat32(4, true));
+                });
+              } else if (el.mode.value === "float32") {
+                parseBinaryBytes(value, 4, (view) => {
+                  addSample(view.getFloat32(0, true));
+                });
               } else if (el.mode.value === "int32") {
-                parseBinaryBytes(value, (view) => view.getInt32(0, true));
+                parseBinaryBytes(value, 4, (view) => {
+                  addSample(view.getInt32(0, true));
+                });
               } else {
                 parseTextBytes(value);
               }
@@ -505,8 +546,10 @@
       ctx.fillStyle = "#667085";
       ctx.font = "12px system-ui, sans-serif";
 
-      const values = state.points;
-      const { minY, maxY } = getYAxisRange(values);
+      const actualValues = state.actualPoints;
+      const targetValues = state.targetPoints;
+      const yValues = targetValues.length ? actualValues.concat(targetValues) : actualValues;
+      const { minY, maxY } = getYAxisRange(yValues);
 
       for (let i = 0; i <= 4; i += 1) {
         const y = pad.top + (plotH * i) / 4;
@@ -525,35 +568,63 @@
       ctx.lineTo(pad.left + plotW, pad.top + plotH);
       ctx.stroke();
 
-      if (values.length < 2) {
+      if (actualValues.length < 2) {
         ctx.fillStyle = "#667085";
         ctx.fillText("Waiting for RPM samples...", pad.left + 12, pad.top + 24);
         return;
       }
 
-      ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue("--line");
-      ctx.lineWidth = 2;
       ctx.save();
       ctx.beginPath();
       ctx.rect(pad.left, pad.top, plotW, plotH);
       ctx.clip();
-      ctx.beginPath();
 
-      for (let i = 0; i < values.length; i += 1) {
-        const x = pad.left + (plotW * i) / (MAX_POINTS - 1);
-        const y = pad.top + plotH - ((values[i] - minY) / (maxY - minY)) * plotH;
-        if (i === 0) {
-          ctx.moveTo(x, y);
-        } else {
-          ctx.lineTo(x, y);
-        }
+      drawSeries(actualValues, getComputedStyle(document.documentElement).getPropertyValue("--line"), 2);
+      if (targetValues.length >= 2) {
+        drawSeries(targetValues, getComputedStyle(document.documentElement).getPropertyValue("--target-line"), 2);
       }
 
-      ctx.stroke();
       ctx.restore();
+      drawLegend(pad.left + 12, pad.top + 12, targetValues.length >= 2);
       ctx.fillStyle = "#667085";
       ctx.fillText("latest samples", pad.left + plotW - 88, pad.top + plotH + 24);
       ctx.fillText("RPM", 8, 16);
+
+      function drawSeries(values, color, width) {
+        ctx.strokeStyle = color.trim();
+        ctx.lineWidth = width;
+        ctx.beginPath();
+
+        for (let i = 0; i < values.length; i += 1) {
+          const x = pad.left + (plotW * i) / (MAX_POINTS - 1);
+          const y = pad.top + plotH - ((values[i] - minY) / (maxY - minY)) * plotH;
+          if (i === 0) {
+            ctx.moveTo(x, y);
+          } else {
+            ctx.lineTo(x, y);
+          }
+        }
+
+        ctx.stroke();
+      }
+
+      function drawLegend(x, y, hasTarget) {
+        const actualColor = getComputedStyle(document.documentElement).getPropertyValue("--line").trim();
+        const targetColor = getComputedStyle(document.documentElement).getPropertyValue("--target-line").trim();
+
+        ctx.font = "12px system-ui, sans-serif";
+        ctx.fillStyle = actualColor;
+        ctx.fillRect(x, y, 18, 3);
+        ctx.fillStyle = "#667085";
+        ctx.fillText("Actual", x + 26, y + 5);
+
+        if (hasTarget) {
+          ctx.fillStyle = targetColor;
+          ctx.fillRect(x + 86, y, 18, 3);
+          ctx.fillStyle = "#667085";
+          ctx.fillText("Target", x + 112, y + 5);
+        }
+      }
     }
 
     el.connect.addEventListener("click", connectSerial);
@@ -563,6 +634,11 @@
       state.rxBytes = [];
       state.textCache = "";
       setStatus(state.port ? "Resynced" : "Disconnected", state.port ? "connected" : "");
+    });
+    el.mode.addEventListener("change", () => {
+      state.rxBytes = [];
+      state.textCache = "";
+      resetData();
     });
     el.yAxisMode.addEventListener("change", () => {
       const manual = el.yAxisMode.value === "manual";
